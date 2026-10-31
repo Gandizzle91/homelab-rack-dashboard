@@ -4,6 +4,12 @@ A touch dashboard for a **1280×400 rack display** in a 10-inch homelab rack: li
 world map, CrowdSec bans, WAN traffic, temperatures, SMART data, backups, a vulnerability check with
 **scan and patch buttons** – and a PWM-controlled rack fan, all driven by a Raspberry Pi.
 
+I use the following Display, that fits just perfectly in a 10" Rack
+https://link.amazon/B0fshQPfO
+(**Affiliate Disclosure:**
+The Amazon link above is an affiliate link.
+As an Amazon Associate I earn from qualifying purchases)
+
 No Grafana, no build step, no framework: one static page that reads Prometheus and Loki through a
 read-only proxy. English and German UI included.
 
