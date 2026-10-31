@@ -1,3 +1,5 @@
+If you like the Dashboard you can support me https://buymeacoffee.com/gandizzle
+
 # Homelab Rack Dashboard
 
 A touch dashboard for a **1280×400 rack display** in a 10-inch homelab rack: live firewall blocks on a
@@ -137,3 +139,5 @@ server and syntax-checked; if something does not work in your setup, please open
 
 [MIT](LICENSE) – use it, change it, share it. No warranty: in particular the patch feature changes
 software on your servers, so test it carefully.
+
+If you like the Dashboard you can support me https://buymeacoffee.com/gandizzle
