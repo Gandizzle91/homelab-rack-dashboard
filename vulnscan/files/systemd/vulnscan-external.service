@@ -1,0 +1,9 @@
+[Unit]
+Description=vulnscan: external view (Shodan InternetDB and certificates)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/vulnscan/check-external.sh
+TimeoutStartSec=10m

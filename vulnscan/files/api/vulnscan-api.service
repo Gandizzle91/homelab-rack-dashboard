@@ -1,0 +1,16 @@
+[Unit]
+Description=vulnscan API (buttons for the rack panel, port 8081)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/default/vulnscan-api
+ExecStart=/usr/bin/python3 /opt/vulnscan/vulnscan-api.py
+Restart=always
+RestartSec=5
+User=vulnscan-api
+Group=vulnscan-api
+WorkingDirectory=/var/lib/vulnscan-api
+
+[Install]
+WantedBy=multi-user.target

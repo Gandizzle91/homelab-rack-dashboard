@@ -1,0 +1,2 @@
+# vulnscan-api may start exactly these checks, nothing else
+vulnscan-api ALL=(root) NOPASSWD: /usr/bin/systemctl start vulnscan-external.service, /usr/bin/systemctl start vulnscan-nuclei.service, /usr/bin/systemctl start vulnscan-build.service

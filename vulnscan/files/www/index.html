@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Homelab security check</title>
+<style>
+  :root {
+    --bg: #12151a; --panel: #1b2027; --line: #2a313b; --text: #e6e9ee; --muted: #8b95a3;
+    --ok: #3fb27f; --warn: #e3a33b; --crit: #e5534b; --low: #6b9ee8;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; padding: 24px 20px 48px; }
+  header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0; }
+  h2 { font-size: 17px; font-weight: 600; margin: 32px 0 10px; }
+  .pill { padding: 4px 12px; border-radius: 999px; font-weight: 600; font-size: 13px; }
+  .pill.ok { background: rgba(63,178,127,.15); color: var(--ok); }
+  .pill.warn { background: rgba(227,163,59,.15); color: var(--warn); }
+  .pill.crit { background: rgba(229,83,75,.15); color: var(--crit); }
+  .muted { color: var(--muted); }
+  .reasons { margin: 12px 0 0; padding-left: 18px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-top: 20px; }
+  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .tile .label { color: var(--muted); font-size: 13px; }
+  .tile .value { font-size: 30px; font-weight: 600; margin-top: 2px; }
+  .tile .sub { color: var(--muted); font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line);
+          border-radius: 10px; overflow: hidden; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: 13px; }
+  tr:last-child td { border-bottom: none; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .sev { font-weight: 600; text-transform: capitalize; }
+  .sev.critical, .sev.high { color: var(--crit); }
+  .sev.medium { color: var(--warn); }
+  .sev.low { color: var(--low); }
+  .bad { color: var(--crit); font-weight: 600; }
+  .warn { color: var(--warn); font-weight: 600; }
+  .good { color: var(--ok); }
+  details summary { cursor: pointer; color: var(--muted); }
+  code { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+  .empty { padding: 14px 16px; background: var(--panel); border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); }
+  a { color: var(--low); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Homelab security check</h1>
+    <span id="status" class="pill">loading …</span>
+    <span id="generated" class="muted"></span>
+  </header>
+  <ul id="reasons" class="reasons"></ul>
+
+  <div class="tiles">
+    <div class="tile"><div class="label">Security updates pending</div><div class="value" id="t-sec">–</div><div class="sub" id="t-sec-sub"></div></div>
+    <div class="tile"><div class="label">Findings (Nuclei)</div><div class="value" id="t-find">–</div><div class="sub" id="t-find-sub"></div></div>
+    <div class="tile"><div class="label">Ports open to the internet</div><div class="value" id="t-ports">–</div><div class="sub" id="t-ports-sub"></div></div>
+    <div class="tile"><div class="label">Next certificate expires in</div><div class="value" id="t-cert">–</div><div class="sub" id="t-cert-sub"></div></div>
+  </div>
+
+  <h2>Patch status</h2>
+  <div id="patches"></div>
+
+  <h2>Findings of the Nuclei scan</h2>
+  <div id="findings"></div>
+
+  <h2>External view</h2>
+  <div id="external"></div>
+
+  <h2>Certificates</h2>
+  <div id="certs"></div>
+</main>
+<script>
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt = iso => {
+  if (!iso) return 'never';
+  const d = new Date(iso);
+  return isNaN(d) ? esc(iso) : d.toLocaleString(undefined, {dateStyle: 'medium', timeStyle: 'short'});
+};
+const STATUS = {ok: 'All good', warn: 'Attention', crit: 'Critical'};
+const SEV = {critical: 'critical', high: 'high', medium: 'medium', low: 'low'};
+
+function render(s) {
+  const st = document.getElementById('status');
+  st.className = 'pill ' + s.status;
+  st.textContent = STATUS[s.status] || s.status;
+  document.getElementById('generated').textContent = 'as of ' + fmt(s.generated);
+  document.getElementById('reasons').innerHTML = s.reasons.map(r => `<li>${esc(r)}</li>`).join('');
+
+  const p = s.patches, n = s.nuclei, e = s.external;
+  document.getElementById('t-sec').textContent = p.total_security;
+  document.getElementById('t-sec-sub').textContent =
+    `${p.total_upgradable} updates in total on ${p.hosts.length} systems` + (p.reboot_needed.length ? `, ${p.reboot_needed.length}× reboot` : '');
+  const c = n.counts;
+  document.getElementById('t-find').textContent = c.critical + c.high + c.medium + c.low;
+  document.getElementById('t-find-sub').textContent = `${c.critical} critical · ${c.high} high · ${c.medium} medium · ${c.low} low`;
+  document.getElementById('t-ports').textContent = e.ports.length;
+  document.getElementById('t-ports-sub').textContent = e.ports.length ? e.ports.join(', ') : (e.note || 'none recorded');
+  const certDays = e.certs.filter(x => x.days_left !== null).map(x => x.days_left);
+  document.getElementById('t-cert').textContent = certDays.length ? Math.min(...certDays) + ' days' : '–';
+  document.getElementById('t-cert-sub').textContent = e.certs.length ? `${e.certs.length} domains checked` : 'not checked yet';
+
+  document.getElementById('patches').innerHTML = p.hosts.length ? `
+    <table><thead><tr><th>System</th><th>Operating system</th><th class="num">Updates</th><th class="num">Security</th><th>Reboot</th><th>Checked</th></tr></thead><tbody>
+    ${p.hosts.map(h => `<tr>
+      <td><strong>${esc(h.host)}</strong><br><span class="muted">${esc(h.address)}</span></td>
+      <td>${esc(h.os)}<br><span class="muted">Kernel ${esc(h.kernel)}</span></td>
+      <td class="num">${h.upgradable ? `<details><summary>${h.upgradable}</summary><code>${h.packages.map(esc).join('<br>')}</code></details>` : '<span class="good">0</span>'}</td>
+      <td class="num">${h.security ? `<span class="bad">${h.security}</span>` : '<span class="good">0</span>'}</td>
+      <td>${h.reboot_required ? '<span class="warn">required</span>' : '<span class="good">no</span>'}</td>
+      <td class="muted">${fmt(h.checked)}</td></tr>`).join('')}
+    </tbody></table>
+    ${p.unreachable.length ? `<p class="warn">Not reached: ${p.unreachable.map(esc).join(', ')}</p>` : ''}
+    <p class="muted">Collected ${fmt(p.generated)} by the Ansible host.</p>`
+    : '<div class="empty">No patch status yet. The Ansible host sends it once a day.</div>';
+
+  document.getElementById('findings').innerHTML = n.findings.length ? `
+    <table><thead><tr><th>Severity</th><th>Finding</th><th>Target</th><th>Matched at</th></tr></thead><tbody>
+    ${n.findings.map(f => `<tr>
+      <td class="sev ${esc(f.severity)}">${esc(SEV[f.severity] || f.severity)}</td>
+      <td>${esc(f.name)}<br><code class="muted">${esc(f.template)}</code>
+        ${f.description ? `<details><summary>Description</summary>${esc(f.description)}${f.reference ? `<br><a href="${esc(f.reference)}" target="_blank" rel="noopener noreferrer">Reference</a>` : ''}</details>` : ''}</td>
+      <td>${esc(f.target)}</td>
+      <td><code>${esc(f.matched)}</code></td></tr>`).join('')}
+    </tbody></table>
+    <p class="muted">Last scan ${fmt(n.lastrun)}. Nuclei runs every Sunday at 03:30.</p>`
+    : `<div class="empty">${n.lastrun ? 'No findings in the last scan (' + fmt(n.lastrun) + ').' : 'No scan has run yet. Nuclei runs every Sunday at 03:30.'}</div>`;
+
+  document.getElementById('external').innerHTML = `
+    <table><tbody>
+      <tr><th>Public IP</th><td>${esc(e.ip) || '–'} <span class="muted">(via ${esc(e.host)})</span></td></tr>
+      <tr><th>Open ports according to Shodan</th><td>${e.ports.length ? e.ports.map(esc).join(', ') : esc(e.note || 'none')}</td></tr>
+      <tr><th>Known vulnerabilities according to Shodan</th><td>${e.vulns.length ? `<span class="bad">${e.vulns.map(esc).join(', ')}</span>` : '<span class="good">none</span>'}</td></tr>
+      <tr><th>Detected software</th><td>${e.cpes && e.cpes.length ? e.cpes.map(x => `<code>${esc(x)}</code>`).join('<br>') : '–'}</td></tr>
+      <tr><th>Checked</th><td class="muted">${fmt(e.checked)}</td></tr>
+    </tbody></table>`;
+
+  document.getElementById('certs').innerHTML = e.certs.length ? `
+    <table><thead><tr><th>Domain</th><th>Expires</th><th class="num">Days</th></tr></thead><tbody>
+    ${e.certs.map(x => `<tr><td>${esc(x.domain)}</td><td>${x.expires ? fmt(x.expires) : '<span class="warn">not reachable</span>'}</td>
+      <td class="num">${x.days_left === null ? '–' : `<span class="${x.days_left < 7 ? 'bad' : x.days_left < 14 ? 'warn' : 'good'}">${x.days_left}</span>`}</td></tr>`).join('')}
+    </tbody></table>` : '<div class="empty">Not checked yet.</div>';
+}
+
+async function load() {
+  try {
+    const r = await fetch('data/summary.json?ts=' + Date.now(), {cache: 'no-store'});
+    render(await r.json());
+  } catch (err) {
+    document.getElementById('status').textContent = 'No data';
+  }
+}
+load();
+setInterval(load, 5 * 60 * 1000);
+</script>
+</body>
+</html>

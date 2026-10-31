@@ -1,0 +1,4 @@
+# ~/.config/labwc/autostart  (Raspberry Pi OS Bookworm/Trixie with the labwc desktop)
+# Prerequisites: raspi-config > System Options > Boot / Auto Login > Desktop Autologin
+#                raspi-config > Display Options > Screen Blanking > off
+chromium --kiosk --incognito --noerrdialogs --disable-infobars --no-first-run --password-store=basic 'http://192.168.1.10:8088' &

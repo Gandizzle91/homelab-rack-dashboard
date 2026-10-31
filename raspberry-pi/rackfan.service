@@ -1,0 +1,13 @@
+[Unit]
+Description=Rack fan control (Noctua PWM on GPIO18/24)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/bin/rackfan.py
+# Environment=RACKFAN_PROM=http://192.168.1.10:8088/prom/api/v1/query
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

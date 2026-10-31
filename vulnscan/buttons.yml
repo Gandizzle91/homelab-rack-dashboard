@@ -1,0 +1,210 @@
+# "Start scan" and "Patch vulnerabilities" buttons for the rack panel.
+# Run on the Ansible host, after scanner.yml:
+#   cd vulnscan && LC_ALL=C.UTF-8 ansible-playbook -i /root/ansible/inventory.yml buttons.yml -e @vars.yml
+#
+# What it does:
+#   1. Ansible host: installs the trigger /usr/local/sbin/vulnscan-trigger (allowed: ping, status, patch)
+#   2. Scanner: service vulnscan-api on port 8081 with its own unprivileged user and SSH key;
+#      sudo only for starting the three vulnscan checks
+#   3. Ansible host: the scanner's key goes into /root/.ssh/authorized_keys, locked to the trigger
+#      and to the scanner's source address (forced command, no shell, no forwarding)
+#   4. Tests the connection and the restrictions
+# Safe to run again.
+
+- name: Install the trigger on the Ansible host
+  hosts: localhost
+  gather_facts: true
+  tasks:
+    - name: Own address known?
+      ansible.builtin.assert:
+        that: ansible_ip is defined or ansible_default_ipv4.address is defined
+        fail_msg: "No IPv4 address with a default route found - run again with -e ansible_ip=<IP of this host>"
+
+    - name: Find ansible-playbook
+      ansible.builtin.shell: command -v ansible-playbook
+      register: apb
+      changed_when: false
+
+    - name: Install the trigger
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/files/trigger.py"
+        dest: /usr/local/sbin/vulnscan-trigger
+        mode: "0755"
+
+    - name: Settings for the trigger
+      ansible.builtin.copy:
+        dest: /etc/default/vulnscan-trigger
+        mode: "0644"
+        content: |
+          # read by /usr/local/sbin/vulnscan-trigger
+          BASE={{ playbook_dir }}
+          INVENTORY={{ vulnscan_inventory }}
+          ANSIBLE_PLAYBOOK={{ apb.stdout }}
+
+    - name: Add the scanner to the in-memory inventory
+      ansible.builtin.add_host:
+        name: vulnscan
+        ansible_host: "{{ scanner_ip }}"
+        ansible_user: root
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new"
+
+
+- name: Set up the API on the scanner
+  hosts: vulnscan
+  gather_facts: false
+  vars:
+    ansible_ip: "{{ hostvars['localhost'].ansible_default_ipv4.address }}"
+  tasks:
+    - name: Install packages
+      ansible.builtin.apt:
+        name: [sudo, openssh-client]
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: User for the API
+      ansible.builtin.user:
+        name: vulnscan-api
+        system: true
+        shell: /usr/sbin/nologin
+        home: /var/lib/vulnscan-api
+        create_home: true
+
+    - name: API directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: vulnscan-api
+        group: vulnscan-api
+        mode: "0700"
+      loop:
+        - /var/lib/vulnscan-api
+        - /var/lib/vulnscan-api/.ssh
+        - /var/lib/vulnscan-api/logs
+
+    - name: Create the API's SSH key
+      ansible.builtin.command: ssh-keygen -q -t ed25519 -N "" -C vulnscan-api -f /var/lib/vulnscan-api/.ssh/id_ed25519
+      args:
+        creates: /var/lib/vulnscan-api/.ssh/id_ed25519
+
+    - name: The key belongs to the API user
+      ansible.builtin.file:
+        path: "/var/lib/vulnscan-api/.ssh/{{ item }}"
+        owner: vulnscan-api
+        group: vulnscan-api
+      loop: [id_ed25519, id_ed25519.pub]
+
+    - name: Read the public key
+      ansible.builtin.slurp:
+        src: /var/lib/vulnscan-api/.ssh/id_ed25519.pub
+      register: api_pub
+
+    - name: Copy the API program
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/files/api/vulnscan-api.py"
+        dest: /opt/vulnscan/vulnscan-api.py
+        mode: "0755"
+
+    - name: API settings
+      ansible.builtin.copy:
+        dest: /etc/default/vulnscan-api
+        mode: "0644"
+        content: |
+          # read by the vulnscan-api service; after changes: systemctl restart vulnscan-api
+          PORT=8081
+          ANSIBLE_HOST={{ ansible_ip }}
+          # Only these addresses may start a scan or a patch run (comma-separated, networks allowed)
+          CONTROL_CLIENTS={{ (control_clients + ['127.0.0.1']) | join(',') }}
+
+    - name: sudo only for the three checks
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/files/api/vulnscan-api.sudoers"
+        dest: /etc/sudoers.d/vulnscan-api
+        mode: "0440"
+        validate: visudo -cf %s
+
+    - name: Install the service
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/files/api/vulnscan-api.service"
+        dest: /etc/systemd/system/vulnscan-api.service
+        mode: "0644"
+
+    - name: Start the service
+      ansible.builtin.systemd:
+        name: vulnscan-api.service
+        enabled: true
+        state: restarted
+        daemon_reload: true
+
+    - name: Wait for the API
+      ansible.builtin.wait_for:
+        port: 8081
+        host: 127.0.0.1
+        timeout: 30
+
+
+- name: Allow the scanner to call the trigger
+  hosts: localhost
+  gather_facts: false
+  vars:
+    api_key: "{{ hostvars['vulnscan'].api_pub.content | b64decode | trim }}"
+  tasks:
+    - name: Directory /root/.ssh
+      ansible.builtin.file:
+        path: /root/.ssh
+        state: directory
+        mode: "0700"
+
+    - name: Authorize the key (trigger only, only from the scanner, no shell)
+      ansible.builtin.lineinfile:
+        path: /root/.ssh/authorized_keys
+        create: true
+        mode: "0600"
+        regexp: " vulnscan-api$"
+        line: 'command="/usr/local/sbin/vulnscan-trigger",from="{{ scanner_ip }}",restrict {{ api_key }}'
+
+
+- name: Test connection and restrictions
+  hosts: vulnscan
+  gather_facts: false
+  vars:
+    ansible_ip: "{{ hostvars['localhost'].ansible_default_ipv4.address }}"
+  tasks:
+    - name: The scanner reaches the trigger (expects "pong")
+      ansible.builtin.command: >
+        runuser -u vulnscan-api -- ssh -i /var/lib/vulnscan-api/.ssh/id_ed25519
+        -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new
+        -o UserKnownHostsFile=/var/lib/vulnscan-api/.ssh/known_hosts -o ConnectTimeout=10
+        root@{{ ansible_ip }} ping
+      register: ping
+      changed_when: false
+      failed_when: "'pong' not in ping.stdout"
+
+    - name: Any other command is refused (negative test)
+      ansible.builtin.command: >
+        runuser -u vulnscan-api -- ssh -i /var/lib/vulnscan-api/.ssh/id_ed25519
+        -o BatchMode=yes -o IdentitiesOnly=yes
+        -o UserKnownHostsFile=/var/lib/vulnscan-api/.ssh/known_hosts -o ConnectTimeout=10
+        root@{{ ansible_ip }} id
+      register: deny
+      changed_when: false
+      failed_when: deny.rc == 0 or 'uid=' in deny.stdout
+
+    - name: Check the API's sudo rights
+      ansible.builtin.command: runuser -u vulnscan-api -- sudo -n -l /usr/bin/systemctl start vulnscan-build.service
+      changed_when: false
+
+    - name: The API answers
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8081/api/job
+
+
+- name: Summary
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Result
+      ansible.builtin.debug:
+        msg:
+          - "Scanner API is running: http://{{ scanner_ip }}:8081/api/job"
+          - "Control allowed for: {{ control_clients | join(', ') }}"
+          - "Set  vuln: 'http://{{ scanner_ip }}:8081/api'  in panel/html/config.js"

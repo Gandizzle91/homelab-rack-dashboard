@@ -1,0 +1,5 @@
+# Domains for the certificate check, one per line. Lines starting with # are ignored.
+home.example.com
+cloud.example.com
+docs.example.com
+vpn.example.com

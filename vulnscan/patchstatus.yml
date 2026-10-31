@@ -1,0 +1,72 @@
+# Collects the patch status of all systems in the Ansible inventory and sends it to the scanner.
+# Runs daily from cron on the Ansible host (see scanner.yml) and from the "Start scan" button.
+# Manually:
+#   cd vulnscan && LC_ALL=C.UTF-8 ansible-playbook -i /root/ansible/inventory.yml patchstatus.yml -e @vars.yml
+
+- name: Collect the patch status of all systems
+  hosts: "all:!vulnscan"
+  become: true
+  gather_facts: true
+  ignore_unreachable: true
+  tasks:
+    - name: Update the package lists
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      ignore_errors: true
+
+    - name: List pending updates
+      ansible.builtin.shell: "apt list --upgradable 2>/dev/null | tail -n +2"
+      register: upg
+      changed_when: false
+      ignore_errors: true
+
+    - name: Check whether a reboot is required
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: rb
+
+    - name: Remember the result
+      ansible.builtin.set_fact:
+        ps_result:
+          host: "{{ inventory_hostname }}"
+          address: "{{ ansible_host | default(inventory_hostname) }}"
+          os: "{{ ansible_distribution }} {{ ansible_distribution_version }}"
+          kernel: "{{ ansible_kernel }}"
+          upgradable: "{{ upg.stdout_lines | default([]) | length }}"
+          security: "{{ upg.stdout_lines | default([]) | select('search', '-security') | list | length }}"
+          packages: "{{ upg.stdout_lines | default([]) | map('regex_replace', '/.*$', '') | list }}"
+          reboot_required: "{{ rb.stat.exists | default(false) }}"
+          checked: "{{ ansible_date_time.iso8601 }}"
+
+
+- name: Send the result to the scanner
+  hosts: localhost
+  gather_facts: false
+  vars:
+    targets: "{{ groups['all'] | difference(['vulnscan']) }}"
+  tasks:
+    - name: Merge the results
+      ansible.builtin.set_fact:
+        ps_all: "{{ targets | map('extract', hostvars) | selectattr('ps_result', 'defined') | map(attribute='ps_result') | list }}"
+        ps_missing: "{{ targets | map('extract', hostvars) | rejectattr('ps_result', 'defined') | map(attribute='inventory_hostname') | list }}"
+
+    - name: Write the file on the scanner
+      ansible.builtin.copy:
+        content: "{{ {'generated': now(utc=true).isoformat(), 'hosts': ps_all, 'unreachable': ps_missing} | to_nice_json }}"
+        dest: /opt/vulnscan/data/patches.json
+        mode: "0644"
+      delegate_to: "{{ scanner_ip }}"
+      vars:
+        ansible_connection: ssh
+        ansible_user: root
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new"
+
+    - name: Rebuild the summary
+      ansible.builtin.command: /usr/bin/python3 /opt/vulnscan/build.py
+      changed_when: false
+      delegate_to: "{{ scanner_ip }}"
+      vars:
+        ansible_connection: ssh
+        ansible_user: root
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new"

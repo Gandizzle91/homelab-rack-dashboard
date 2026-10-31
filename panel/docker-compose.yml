@@ -1,0 +1,19 @@
+# The rack panel: static page + read-only proxy. Start the monitoring stack first,
+# this joins its network (monitoring_default).
+services:
+  rack-panel:
+    image: nginx:alpine
+    container_name: rack-panel
+    restart: unless-stopped
+    ports:
+      - "8088:80"
+    volumes:
+      - ./html:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - monitoring
+
+networks:
+  monitoring:
+    name: monitoring_default
+    external: true

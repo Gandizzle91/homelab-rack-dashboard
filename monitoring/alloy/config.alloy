@@ -1,0 +1,65 @@
+// OPNsense firewall log -> GeoIP -> Loki
+// OPNsense: System > Settings > Logging > Remote: transport UDP(4), applications "filter (filterlog)",
+//           hostname = Docker host, port 1514, RFC5424 enabled.
+
+loki.source.syslog "opnsense" {
+  listener {
+    address       = "0.0.0.0:1514"
+    protocol      = "udp"
+    syslog_format = "rfc5424"
+    labels        = { job = "opnsense" }
+  }
+  relabel_rules = loki.relabel.syslog.rules
+  forward_to    = [loki.process.filterlog.receiver]
+}
+
+loki.relabel "syslog" {
+  forward_to = []
+  rule {
+    source_labels = ["__syslog_message_app_name"]
+    target_label  = "app"
+  }
+}
+
+loki.process "filterlog" {
+  // parse filterlog lines only, pass everything else through unchanged
+  stage.match {
+    selector = "{app=\"filterlog\"}"
+
+    // filterlog-CSV (IPv4): rule,sub,anchor,label,iface,reason,action,dir,4,tos,ecn,ttl,id,offset,flags,protonum,proto,len,src,dst[,sport,dport]
+    stage.regex {
+      expression = "^(?:[^,]*,){4}(?P<iface>[^,]*),[^,]*,(?P<action>[^,]*),(?P<dir>[^,]*),4,(?:[^,]*,){7}(?P<proto>[^,]*),[^,]*,(?P<src_ip>[^,]*),(?P<dst_ip>[^,]*)(?:,(?P<src_port>\\d+),(?P<dst_port>\\d+))?"
+    }
+
+    // country, city and coordinates of the sender (private addresses stay empty)
+    stage.geoip {
+      source  = "src_ip"
+      db      = "/geoip/GeoLite2-City.mmdb"
+      db_type = "city"
+    }
+
+    // stored as structured metadata: queryable without creating thousands of label values
+    stage.structured_metadata {
+      values = {
+        action                    = "",
+        iface                     = "",
+        dir                       = "",
+        proto                     = "",
+        src_ip                    = "",
+        dst_port                  = "",
+        geoip_country_code        = "",
+        geoip_country_name        = "",
+        geoip_city_name           = "",
+        geoip_location_latitude   = "",
+        geoip_location_longitude  = "",
+      }
+    }
+  }
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

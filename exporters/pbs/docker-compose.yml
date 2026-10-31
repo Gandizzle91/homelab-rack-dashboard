@@ -1,0 +1,20 @@
+# Proxmox Backup Server exporter. Runs next to Prometheus in the monitoring network.
+# On the PBS: Configuration > Access Control > API Token: user root@pam, token name "pbs-exporter",
+# then Permissions > Add > API Token Permission: path "/", role "Audit". Put the secret into .env.
+services:
+  pbs-exporter:
+    image: ghcr.io/natrontech/pbs-exporter:latest
+    container_name: pbs-exporter
+    restart: unless-stopped
+    environment:
+      PBS_ENDPOINT: ${PBS_ENDPOINT}
+      PBS_USERNAME: root@pam
+      PBS_API_TOKEN_NAME: pbs-exporter
+      PBS_API_TOKEN: ${PBS_API_TOKEN}
+      PBS_INSECURE: "true"              # self-signed certificate on the PBS
+    networks: [monitoring]
+
+networks:
+  monitoring:
+    name: monitoring_default
+    external: true

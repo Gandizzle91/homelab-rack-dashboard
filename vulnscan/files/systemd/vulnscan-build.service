@@ -1,0 +1,6 @@
+[Unit]
+Description=vulnscan: rebuild the summary
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/vulnscan/build.py

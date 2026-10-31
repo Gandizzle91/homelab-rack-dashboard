@@ -1,0 +1,221 @@
+# Vulnerability scanner for the homelab.
+# Run on the Ansible host:
+#   cd vulnscan && LC_ALL=C.UTF-8 ansible-playbook -i /root/ansible/inventory.yml scanner.yml -e @vars.yml
+#
+# Creates a small Debian container on the Proxmox host "pve_host", installs Nuclei,
+# the external check and the scanner dashboard (port 8080), and schedules the daily
+# patch status collection on this Ansible host. Safe to run again.
+
+- name: Create the scanner container on Proxmox
+  hosts: "{{ pve_host }}"
+  become: true
+  gather_facts: false
+  vars:
+    ct_hostname: vulnscan
+    pubkey_candidates:
+      - "{{ lookup('ansible.builtin.env', 'HOME') }}/.ssh/id_ed25519.pub"
+      - "{{ lookup('ansible.builtin.env', 'HOME') }}/.ssh/id_ecdsa.pub"
+      - "{{ lookup('ansible.builtin.env', 'HOME') }}/.ssh/id_rsa.pub"
+  tasks:
+    - name: Check whether the container already exists
+      ansible.builtin.shell: "pct list | awk 'NR>1 && $NF==\"{{ ct_hostname }}\" {print $1}'"
+      register: existing
+      changed_when: false
+
+    - name: Create the container
+      when: existing.stdout | length == 0
+      block:
+        - name: Update the template list
+          ansible.builtin.command: pveam update
+          changed_when: false
+
+        - name: Find the newest Debian template
+          ansible.builtin.shell: >
+            pveam available --section system | awk '{print $2}'
+            | grep -E '^debian-1[2-9]-standard' | grep _amd64 | sort -V | tail -n1
+          register: tmpl
+          changed_when: false
+          failed_when: tmpl.stdout | length == 0
+
+        - name: Download the template if needed
+          ansible.builtin.shell: "pveam list local | grep -q '{{ tmpl.stdout }}' || pveam download local {{ tmpl.stdout }}"
+          changed_when: true
+
+        - name: Find a storage for containers
+          ansible.builtin.shell: "pvesm status --content rootdir --enabled 1 | awk 'NR>1 {print $1; exit}'"
+          register: store
+          changed_when: false
+          failed_when: store.stdout | length == 0
+
+        - name: Get a free container ID
+          ansible.builtin.command: pvesh get /cluster/nextid
+          register: nextid
+          changed_when: false
+
+        - name: Put the Ansible host's SSH key in place for the container
+          ansible.builtin.copy:
+            content: "{{ lookup('ansible.builtin.file', lookup('ansible.builtin.first_found', pubkey_candidates)) }}\n"
+            dest: /tmp/vulnscan.pub
+            mode: "0600"
+
+        - name: Create the container
+          ansible.builtin.command: >
+            pct create {{ nextid.stdout }} local:vztmpl/{{ tmpl.stdout }}
+            --hostname {{ ct_hostname }} --unprivileged 1 --features nesting=1 --onboot 1
+            --cores {{ scanner_cores }} --memory {{ scanner_memory }} --swap 512
+            --rootfs {{ store.stdout }}:{{ scanner_disk_gb }}
+            --net0 name=eth0,bridge={{ scanner_bridge }},ip={{ scanner_ip }}/{{ scanner_prefix }},gw={{ scanner_gateway }}
+            --nameserver {{ scanner_dns }} --searchdomain {{ scanner_searchdomain }}
+            --ssh-public-keys /tmp/vulnscan.pub
+            --description "Vulnerability scanner: Nuclei, patch status, external view. Dashboard on port 8080."
+          changed_when: true
+
+        - name: Start the container
+          ansible.builtin.command: "pct start {{ nextid.stdout }}"
+          changed_when: true
+
+        - name: Remove the temporary key file
+          ansible.builtin.file:
+            path: /tmp/vulnscan.pub
+            state: absent
+
+    - name: Wait for SSH in the container
+      ansible.builtin.wait_for:
+        host: "{{ scanner_ip }}"
+        port: 22
+        timeout: 180
+      delegate_to: localhost
+
+    - name: Add the container to the in-memory inventory
+      ansible.builtin.add_host:
+        name: vulnscan
+        ansible_host: "{{ scanner_ip }}"
+        ansible_user: root
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new"
+
+
+- name: Set up the scanner inside the container
+  hosts: vulnscan
+  gather_facts: false
+  tasks:
+    - name: Install Python if the template has none
+      ansible.builtin.raw: test -x /usr/bin/python3 || (apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y python3)
+      changed_when: false
+
+    - name: Gather facts
+      ansible.builtin.setup:
+
+    - name: Install packages
+      ansible.builtin.apt:
+        name: [curl, jq, unzip, python3, dnsutils, openssl, ca-certificates]
+        update_cache: true
+
+    - name: Automatic security updates for the scanner itself
+      ansible.builtin.apt:
+        name: unattended-upgrades
+
+    - name: Unprivileged user for the web server
+      ansible.builtin.user:
+        name: vulnscan-web
+        system: true
+        shell: /usr/sbin/nologin
+        create_home: false
+
+    - name: Create directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - /opt/vulnscan
+        - /opt/vulnscan/data
+        - /opt/vulnscan/www
+        - /opt/vulnscan/www/data
+
+    - name: Look up the newest Nuclei release on GitHub
+      ansible.builtin.uri:
+        url: https://api.github.com/repos/projectdiscovery/nuclei/releases/latest
+        return_content: true
+      register: nuclei_release
+
+    - name: Install Nuclei
+      ansible.builtin.unarchive:
+        src: "{{ (nuclei_release.json.assets | selectattr('name', 'search', 'linux_amd64\\.zip$') | first).browser_download_url }}"
+        dest: /usr/local/bin
+        remote_src: true
+        include: [nuclei]
+        mode: "0755"
+
+    - name: Copy scripts
+      ansible.builtin.copy:
+        src: "files/{{ item }}"
+        dest: "/opt/vulnscan/{{ item }}"
+        mode: "0755"
+      loop: [run-nuclei.sh, check-external.sh, build.py]
+
+    - name: Copy target lists (existing ones are kept)
+      ansible.builtin.copy:
+        src: "files/{{ item }}"
+        dest: "/opt/vulnscan/{{ item }}"
+        mode: "0644"
+        force: false
+      loop: [targets.txt, domains.txt]
+
+    - name: Settings for the external check
+      ansible.builtin.copy:
+        dest: /etc/default/vulnscan
+        mode: "0644"
+        content: |
+          # read by check-external.sh
+          DDNS_HOST={{ ddns_host }}
+
+    - name: Copy the web page
+      ansible.builtin.copy:
+        src: files/www/
+        dest: /opt/vulnscan/www/
+        mode: "0644"
+
+    - name: Copy timers and the web service
+      ansible.builtin.copy:
+        src: files/systemd/
+        dest: /etc/systemd/system/
+        mode: "0644"
+
+    - name: Download the Nuclei templates
+      ansible.builtin.command: /usr/local/bin/nuclei -update-templates -silent
+      changed_when: false
+
+    - name: Enable the web service and timers
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+        daemon_reload: true
+      loop:
+        - vulnscan-web.service
+        - vulnscan-nuclei.timer
+        - vulnscan-external.timer
+        - vulnscan-build.timer
+
+    - name: Run the external check once right away
+      ansible.builtin.command: /opt/vulnscan/check-external.sh
+      changed_when: false
+
+
+- name: Schedule the patch status on the Ansible host
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Daily cron job for the patch status
+      ansible.builtin.cron:
+        name: vulnscan-patchstatus
+        minute: "{{ patchstatus_minute }}"
+        hour: "{{ patchstatus_hour }}"
+        job: >-
+          cd {{ playbook_dir }} && LC_ALL=C.UTF-8 ansible-playbook
+          -i {{ vulnscan_inventory }} patchstatus.yml -e @vars.yml
+          > /var/log/vulnscan-patchstatus.log 2>&1
+
+
+- name: Collect the patch status once right away
+  ansible.builtin.import_playbook: patchstatus.yml

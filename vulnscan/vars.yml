@@ -1,0 +1,31 @@
+# Settings for all vulnscan playbooks. Every command passes this file with  -e @vars.yml
+# (see README.md), so these values also work in "hosts:" lines.
+
+# Proxmox VE host (inventory name) that gets the scanner container
+pve_host: pve1
+
+# The scanner container (Debian LXC, unprivileged)
+scanner_ip: 192.168.1.30
+scanner_prefix: 24
+scanner_gateway: 192.168.1.1
+scanner_dns: 192.168.1.1
+scanner_bridge: vmbr0
+scanner_searchdomain: lan
+scanner_cores: 1
+scanner_memory: 1024        # MB
+scanner_disk_gb: 8
+
+# Ansible inventory with all systems whose patch status should be collected
+vulnscan_inventory: /root/ansible/inventory.yml
+
+# Public DNS name of your internet connection (dynamic DNS) for the external check
+ddns_host: home.example.com
+
+# Devices that may press "Start scan" and "Patch now" (IPs or networks).
+# Usually only the Raspberry Pi of the rack display. Everyone else can only read.
+control_clients:
+  - 192.168.1.20
+
+# Daily patch status collection on the Ansible host
+patchstatus_hour: 6
+patchstatus_minute: 15

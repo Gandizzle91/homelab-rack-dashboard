@@ -1,0 +1,21 @@
+# NAS (tested on a UGREEN DXP2800 with UGOS; works on any Linux NAS with Docker).
+# UGOS: Docker app > Project > Create, paste this file.
+services:
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    restart: unless-stopped
+    network_mode: host                  # port 9100
+    command:
+      - --path.rootfs=/host
+    volumes:
+      - /:/host:ro,rslave
+
+  smartctl-exporter:                    # SMART data of the disks, port 9633
+    image: prometheuscommunity/smartctl-exporter:latest
+    container_name: smartctl-exporter
+    restart: unless-stopped
+    privileged: true                    # needs raw access to the disks
+    user: root
+    ports:
+      - "9633:9633"

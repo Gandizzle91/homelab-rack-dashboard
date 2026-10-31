@@ -1,0 +1,10 @@
+[Unit]
+Description=vulnscan: weekly Nuclei scan
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/vulnscan/run-nuclei.sh
+TimeoutStartSec=4h
+Nice=10

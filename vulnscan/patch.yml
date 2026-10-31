@@ -1,0 +1,37 @@
+# Installs the updates confirmed on the rack display.
+# Called by vulnscan-trigger, not by hand. The plan arrives as a variables file:
+#   vuln_patch: { paperless: [bind9-host, tzdata, ...], nextcloud: [...] }
+# Only exactly these packages are upgraded to their newest version (upgrades only, no new
+# software except required dependencies). Nothing is rebooted automatically.
+
+- name: Install confirmed updates
+  hosts: "all:!vulnscan"
+  become: true
+  gather_facts: false
+  ignore_unreachable: true
+  tasks:
+    - name: Upgrade packages
+      ansible.builtin.apt:
+        name: "{{ vuln_patch[inventory_hostname] }}"
+        state: latest
+        only_upgrade: true
+        update_cache: true
+        cache_valid_time: 600
+        lock_timeout: 300
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+      when: inventory_hostname in vuln_patch
+      register: upd
+
+    - name: Reboot required?
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: rb
+      when: inventory_hostname in vuln_patch
+
+    - name: Result
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: {{ 'updated' if upd.changed else 'already up to date' }}{{
+          ' · reboot required' if (rb.stat.exists | default(false)) else '' }}
+      when: inventory_hostname in vuln_patch

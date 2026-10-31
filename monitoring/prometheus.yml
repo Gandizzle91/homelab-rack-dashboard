@@ -1,0 +1,48 @@
+# Prometheus scrape targets. Job names must match config.js of the panel.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 30s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Firewall: OPNsense plugin os-node_exporter (FreeBSD) and the API exporter from docker-compose.yml
+  - job_name: firewall
+    static_configs:
+      - targets: ["192.168.1.1:9100"]
+  - job_name: opnsense-exporter
+    static_configs:
+      - targets: ["opnsense-exporter:8080"]
+
+  # Proxmox VE hosts: prometheus-node-exporter + collectors for SMART/NVMe (exporters/proxmox/setup.sh)
+  - job_name: pve1
+    static_configs:
+      - targets: ["192.168.1.5:9100"]
+  - job_name: pve2                     # hosts the firewall VM
+    static_configs:
+      - targets: ["192.168.1.6:9100"]
+
+  # NAS: node_exporter and smartctl_exporter as containers (exporters/nas/docker-compose.yml)
+  - job_name: nas
+    static_configs:
+      - targets: ["192.168.1.8:9100"]
+  - job_name: nas_smart
+    static_configs:
+      - targets: ["192.168.1.8:9633"]
+
+  # Proxmox Backup Server (exporters/pbs/docker-compose.yml)
+  - job_name: pbs
+    static_configs:
+      - targets: ["pbs-exporter:10019"]   # same Docker network; use <ip>:10019 if it runs elsewhere
+
+  # CrowdSec on the firewall (exporters/opnsense/crowdsec-prometheus.md)
+  - job_name: crowdsec
+    static_configs:
+      - targets: ["192.168.1.1:6060"]
+
+  # Rack fan on the Raspberry Pi (raspberry-pi/rackfan.py)
+  - job_name: rackfan
+    static_configs:
+      - targets: ["192.168.1.20:9101"]

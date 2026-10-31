@@ -1,0 +1,85 @@
+# Monitoring stack: Prometheus, Loki, Alloy (syslog + GeoIP), opnsense-exporter and optional Grafana.
+# Runs on any Docker host in the LAN (example: 192.168.1.10). Secrets go into .env (see .env.example).
+name: monitoring
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=30d
+      - --web.enable-lifecycle          # allows "curl -X POST localhost:9090/-/reload" after config changes
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"           # local only; the panel reaches it over the Docker network
+
+  loki:
+    image: grafana/loki:3.5.0
+    container_name: loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/config.yml
+    volumes:
+      - ./loki-config.yml:/etc/loki/config.yml:ro
+      - loki-data:/loki
+    ports:
+      - "127.0.0.1:3100:3100"
+
+  alloy:
+    image: grafana/alloy:latest
+    container_name: alloy
+    restart: unless-stopped
+    command: run --server.http.listen-addr=0.0.0.0:12345 --storage.path=/var/lib/alloy /etc/alloy/config.alloy
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - geoip:/geoip:ro
+      - alloy-data:/var/lib/alloy
+    ports:
+      - "1514:1514/udp"                 # syslog from the firewall (filterlog)
+
+  geoipupdate:                          # downloads GeoLite2-City (free MaxMind account required)
+    image: ghcr.io/maxmind/geoipupdate:latest
+    container_name: geoipupdate
+    restart: unless-stopped
+    environment:
+      GEOIPUPDATE_ACCOUNT_ID: ${MAXMIND_ACCOUNT_ID}
+      GEOIPUPDATE_LICENSE_KEY: ${MAXMIND_LICENSE_KEY}
+      GEOIPUPDATE_EDITION_IDS: GeoLite2-City
+      GEOIPUPDATE_FREQUENCY: 72         # hours
+    volumes:
+      - geoip:/usr/share/GeoIP
+
+  opnsense-exporter:                    # OPNsense API: interfaces, gateways, services …
+    image: ghcr.io/athennamind/opnsense-exporter:latest
+    container_name: opnsense-exporter
+    restart: unless-stopped
+    command:
+      - --opnsense.protocol=https
+      - --opnsense.address=${OPNSENSE_ADDRESS}
+      - --opnsense.insecure             # self-signed certificate on the firewall
+      - --exporter.instance-label=opnsense
+    environment:
+      OPNSENSE_EXPORTER_OPS_API_KEY: ${OPN_API_KEY}
+      OPNSENSE_EXPORTER_OPS_API_SECRET: ${OPN_API_SECRET}
+
+  grafana:                              # optional – the rack panel does not need Grafana
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    profiles: ["grafana"]               # start with: docker compose --profile grafana up -d
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
+    volumes:
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+
+volumes:
+  prometheus-data:
+  loki-data:
+  alloy-data:
+  grafana-data:
+  geoip:
