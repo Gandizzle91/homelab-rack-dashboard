@@ -74,7 +74,7 @@ flowchart LR
 Needs only Python 3:
 
 ```sh
-git clone https://github.com/<you>/homelab-rack-dashboard.git
+git clone https://github.com/gandizzle91/homelab-rack-dashboard.git
 cd homelab-rack-dashboard
 python3 panel/demo/demo-server.py          # add --lang de for German
 ```
